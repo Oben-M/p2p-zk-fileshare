@@ -1,0 +1,13 @@
+{
+  "name": "p2p-zk-fileshare",
+  "version": "0.1.0",
+  "description": "Accountless, end-to-end encrypted P2P file sharing with a SPAKE2-style zero-knowledge pairing proof",
+  "main": "server/signaling-server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server/signaling-server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

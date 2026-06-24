@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>p2p-zk-fileshare</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <div class="brandbar">
+    <div class="wordmark">p2p<span>&middot;</span>zk<span>&middot;</span>fileshare</div>
+    <div class="tag">SPAKE2 PAIRING &middot; AES-256-GCM &middot; NO ACCOUNTS</div>
+  </div>
+
+  <section class="hero" id="hero">
+    <div>
+      <h1>Prove you know it.<br /><span class="accent-rx">Never say</span> <span class="accent-tx">what it is.</span></h1>
+      <p class="lede">Files move straight between two browsers, encrypted end-to-end. The pairing code is the only secret in this system, and it never reaches this server.</p>
+      <div class="cta-row">
+        <button id="btnCreate" class="cta cta-tx">&#9650; Send a file</button>
+        <button id="btnJoin" class="cta cta-rx">&#9660; Receive a file</button>
+      </div>
+      <div class="trust-line">NO ACCOUNTS &middot; NO STORED KEYS &middot; VERIFIED LIVE IN THE LOG BELOW</div>
+    </div>
+
+    <div class="wave-window-wrap" id="heroWave">
+      <div class="wave-window"><div class="wave-strip wave-strip--tx">
+        <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
+        <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
+      </div></div>
+      <div class="wave-window"><div class="wave-strip wave-strip--rx">
+        <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
+        <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
+      </div></div>
+      <div class="wave-caption">TX / RX &mdash; two signals, never compared in the open</div>
+    </div>
+  </section>
+
+  <main>
+    <section id="createPanel" class="panel panel--tx hidden">
+      <div class="eyebrow">Sender</div>
+      <div class="code-display" id="codeDisplay">generating&hellip;</div>
+      <p class="hint">Share this with the recipient however you like &mdash; text, say it out loud, QR. It never touches this server.</p>
+
+      <div class="wave-window-wrap" id="createWave" style="margin-top:1rem;">
+        <div class="wave-window"><div class="wave-strip wave-strip--tx">
+          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
+          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
+        </div></div>
+        <div class="wave-window"><div class="wave-strip wave-strip--rx">
+          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
+          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
+        </div></div>
+        <div class="wave-caption">Idle until the recipient joins</div>
+      </div>
+      <div id="waitingForPeer" class="status">Waiting for the recipient to join&hellip;</div>
+
+      <div id="sendControls" class="hidden" style="margin-top:1rem;">
+        <input type="file" id="filePicker" />
+        <button id="btnSend" disabled>Send (encrypted)</button>
+        <div class="progress-bar"><div id="sendProgressFill" class="progress-fill"></div></div>
+        <div id="sendStats" class="stats"></div>
+      </div>
+    </section>
+
+    <section id="joinPanel" class="panel panel--rx hidden">
+      <div class="eyebrow">Receiver</div>
+      <input type="text" id="codeInput" placeholder="e.g. 58213#123-456-789" autocomplete="off" />
+      <button id="btnJoinSubmit">Connect</button>
+
+      <div class="wave-window-wrap" id="joinWave" style="margin-top:1rem;">
+        <div class="wave-window"><div class="wave-strip wave-strip--tx">
+          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
+          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
+        </div></div>
+        <div class="wave-window"><div class="wave-strip wave-strip--rx">
+          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
+          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
+        </div></div>
+        <div class="wave-caption">Enter the code to begin pairing</div>
+      </div>
+
+      <div id="receiveStatus" class="status hidden"></div>
+      <div class="progress-bar"><div id="receiveProgressFill" class="progress-fill"></div></div>
+      <div id="receiveStats" class="stats"></div>
+      <a id="downloadLink" class="hidden"></a>
+    </section>
+
+    <details id="advanced" class="panel">
+      <summary>Advanced: TURN server (needed across real NATs, not for same-machine testing)</summary>
+      <label>TURN URL <input type="text" id="turnUrl" placeholder="turn:your-coturn-host:3478" /></label>
+      <label>Username <input type="text" id="turnUser" /></label>
+      <label>Credential <input type="password" id="turnPass" /></label>
+      <label style="display:flex; align-items:center; gap:0.5rem; margin-top:0.8rem;">
+        <input type="checkbox" id="forceRelay" style="width:auto; margin:0;" />
+        Force relay-only (discards every non-TURN candidate -- proves TURN actually works instead of just being configured)
+      </label>
+    </details>
+
+    <section class="panel">
+      <div class="eyebrow">Benchmark: centralized baseline</div>
+      <p class="hint">Encrypts the same way as the P2P path, then uploads + downloads through this server. Run this at the same file size as a P2P transfer to get a real comparison.</p>
+      <input type="file" id="baselineFilePicker" />
+      <button id="btnBaseline">Run centralized baseline</button>
+      <div id="baselineStats" class="stats"></div>
+    </section>
+
+    <section class="panel log-panel">
+      <div class="log-header">
+        <div class="eyebrow">Protocol log</div>
+        <div class="live-dot">LIVE</div>
+      </div>
+      <div id="log" class="log"></div>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
