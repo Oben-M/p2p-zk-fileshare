@@ -8,6 +8,10 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css" />
+<!-- QR generation (sender) and QR scanning (receiver) -- both run entirely
+     client-side, neither library ever talks to a server. -->
+<script src="qrcode.min.js"></script>
+<script src="jsqr.min.js"></script>
 </head>
 <body>
 
@@ -25,6 +29,13 @@
         <button id="btnJoin" class="cta cta-rx">&#9660; Receive a file</button>
       </div>
       <div class="trust-line">NO ACCOUNTS &middot; NO STORED KEYS &middot; VERIFIED LIVE IN THE LOG BELOW</div>
+      <label class="hint" style="display:block; margin-top:0.9rem;">
+        SPAKE2 variant (sender only -- receiver auto-detects from the code):
+        <select id="spakeVariant" style="width:auto; display:inline-block; margin-left:0.5rem; background:var(--panel-2); color:var(--ink); border:1px solid var(--border); border-radius:6px; padding:0.3rem 0.5rem;">
+          <option value="ff" selected>Finite-field (2048-bit)</option>
+          <option value="ec">Elliptic curve (P-256)</option>
+        </select>
+      </label>
     </div>
 
     <div class="wave-window-wrap" id="heroWave">
@@ -44,7 +55,8 @@
     <section id="createPanel" class="panel panel--tx hidden">
       <div class="eyebrow">Sender</div>
       <div class="code-display" id="codeDisplay">generating&hellip;</div>
-      <p class="hint">Share this with the recipient however you like &mdash; text, say it out loud, QR. It never touches this server.</p>
+      <canvas id="qrCanvas" style="display:block; margin:1rem auto 0; border-radius:8px;"></canvas>
+      <p class="hint">Share this with the recipient however you like &mdash; text, say it out loud, or let them scan the QR code above. None of it touches this server.</p>
 
       <div class="wave-window-wrap" id="createWave" style="margin-top:1rem;">
         <div class="wave-window"><div class="wave-strip wave-strip--tx">
@@ -69,8 +81,15 @@
 
     <section id="joinPanel" class="panel panel--rx hidden">
       <div class="eyebrow">Receiver</div>
-      <input type="text" id="codeInput" placeholder="e.g. 58213#123-456-789" autocomplete="off" />
+      <input type="text" id="codeInput" placeholder="e.g. 58213#ff#123-456-789" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
       <button id="btnJoinSubmit">Connect</button>
+      <button id="btnScanQr" type="button">Scan QR code instead</button>
+
+      <video id="qrVideo" class="hidden" playsinline muted style="width:100%; max-width:320px; border-radius:8px; margin-top:0.8rem; display:block;"></video>
+      <canvas id="qrScanCanvas" style="display:none;"></canvas>
+      <div id="qrScanStatus" class="hint hidden">Point the camera at the sender's QR code&hellip;
+        <button id="btnCancelScan" type="button" style="margin-left:0.5rem;">Cancel</button>
+      </div>
 
       <div class="wave-window-wrap" id="joinWave" style="margin-top:1rem;">
         <div class="wave-window"><div class="wave-strip wave-strip--tx">

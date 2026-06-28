@@ -2,17 +2,11 @@
 import { CHUNK_SIZE, makeIv, encryptChunk, decryptChunk } from './crypto-utils.js';
 
 function parseCandidateType(candidateStr) {
-  // e.g. "candidate:842163049 1 udp 1677729535 203.0.113.141 54609 typ srflx raddr ..."
   const m = /typ (\w+)/.exec(candidateStr || '');
-  return m ? m[1] : 'unknown'; // host | srflx (via STUN) | relay (via TURN) | prflx
+  return m ? m[1] : 'unknown';
 }
 
 export class WebRTCTransfer {
-  /**
-   * @param {'A'|'B'} role  A = room creator = WebRTC offerer. B = joiner = answerer.
-   * @param {(msg: object) => void} signalingSend  function that sends a JSON message over the signaling WebSocket
-   * @param {(line: string) => void} onLog  for surfacing what's happening in the UI log panel
-   */
   constructor(role, signalingSend, onLog = () => {}) {
     this.role = role;
     this.signalingSend = signalingSend;
@@ -20,6 +14,8 @@ export class WebRTCTransfer {
     this.dataChannel = null;
     this.pendingCandidates = [];
     this.pc = null;
+    this.chunkCounter = 0;
+    this.connectionDead = false;
   }
 
   async connect(iceServers, { relayOnly = false } = {}) {
@@ -39,7 +35,11 @@ export class WebRTCTransfer {
     this.pc.onconnectionstatechange = () => {
       this.onLog(`Peer connection state: ${this.pc.connectionState}`);
       if (this.pc.connectionState === 'connected') {
+        this.connectionDead = false;
         this._logSelectedCandidatePair();
+      }
+      if (this.pc.connectionState === 'failed' || this.pc.connectionState === 'closed') {
+        this.connectionDead = true;
       }
     };
 
@@ -63,7 +63,7 @@ export class WebRTCTransfer {
       this.signalingSend({ type: 'sdp-offer', sdp: this.pc.localDescription });
     }
 
-    return channelReady; // resolves once the DataChannel is open and ready to use
+    return channelReady;
   }
 
   _wireChannel(dc, resolve) {
@@ -77,7 +77,6 @@ export class WebRTCTransfer {
     dc.onerror = (e) => this.onLog(`DataChannel error: ${e.message || e}`);
   }
 
-  // Call this with every signaling message of type sdp-offer / sdp-answer / ice-candidate.
   async handleSignal(msg) {
     if (msg.type === 'sdp-offer' && this.role === 'B') {
       this.onLog('Received SDP offer');
@@ -111,11 +110,6 @@ export class WebRTCTransfer {
     }
   }
 
-  // Gathered candidates (logged via onicecandidate) are just the options
-  // that were *offered* -- this looks at getStats() to report which pair
-  // actually won and is carrying real traffic. That's the only way to
-  // know for certain whether STUN (srflx) or TURN (relay) made the
-  // connection, versus a direct host-to-host link.
   async _logSelectedCandidatePair() {
     try {
       const stats = await this.pc.getStats();
@@ -148,31 +142,50 @@ export class WebRTCTransfer {
     }
   }
 
+  // Previously this could wait forever on 'bufferedamountlow' if the
+  // underlying connection stalled (the exact symptom that forced a page
+  // refresh to recover from). Now it bails out clearly instead: either
+  // the connection is confirmed dead, or 30s passed with no progress.
   async _waitForBufferSpace() {
     const dc = this.dataChannel;
     if (dc.bufferedAmount <= dc.bufferedAmountLowThreshold) return;
-    await new Promise((resolve) => {
-      const handler = () => {
+    if (this.connectionDead) throw new Error('Connection failed while waiting to send -- aborting rather than hanging.');
+
+    await new Promise((resolve, reject) => {
+      const cleanup = () => {
         dc.removeEventListener('bufferedamountlow', handler);
+        clearInterval(deadCheck);
+        clearTimeout(timeout);
+      };
+      const handler = () => {
+        cleanup();
         resolve();
       };
+      const deadCheck = setInterval(() => {
+        if (this.connectionDead) {
+          cleanup();
+          reject(new Error('Connection failed while waiting to send.'));
+        }
+      }, 500);
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('Timed out waiting for the connection to drain its send buffer (30s) -- the link is likely down.'));
+      }, 30000);
       dc.addEventListener('bufferedamountlow', handler);
     });
   }
 
-  async _sendEncryptedFrame(aesKey, salt4, index, plaintextBytes) {
-    const iv = makeIv(salt4, index);
+  async _sendEncryptedFrame(aesKey, salt4, frameType, plaintextBytes) {
+    const counter = this.chunkCounter++;
+    const iv = makeIv(salt4, counter);
     const ciphertext = await encryptChunk(aesKey, plaintextBytes, iv);
-    const frame = new Uint8Array(4 + ciphertext.length);
-    new DataView(frame.buffer).setUint32(0, index, false);
-    frame.set(ciphertext, 4);
+    const frame = new Uint8Array(5 + ciphertext.length);
+    new DataView(frame.buffer).setUint32(0, counter, false);
+    frame[4] = frameType;
+    frame.set(ciphertext, 5);
     this.dataChannel.send(frame);
   }
 
-  // SENDER SIDE: streams the file in CHUNK_SIZE pieces, encrypting each one
-  // as it goes (never holding the whole file in memory at once) and
-  // respecting WebRTC backpressure so large files don't overrun the
-  // DataChannel's internal buffer.
   async sendFile(file, aesKey, salt4, { onProgress } = {}) {
     const meta = { name: file.name, size: file.size, mime: file.type || 'application/octet-stream' };
     await this._sendEncryptedFrame(aesKey, salt4, 0, new TextEncoder().encode(JSON.stringify(meta)));
@@ -186,7 +199,7 @@ export class WebRTCTransfer {
       const slice = file.slice(start, start + CHUNK_SIZE);
       const buf = new Uint8Array(await slice.arrayBuffer());
       await this._waitForBufferSpace();
-      await this._sendEncryptedFrame(aesKey, salt4, i + 1, buf);
+      await this._sendEncryptedFrame(aesKey, salt4, 1, buf);
       sentBytes += buf.length;
       onProgress?.({ sent: sentBytes, total: file.size, chunk: i + 1, totalChunks });
     }
@@ -194,30 +207,31 @@ export class WebRTCTransfer {
     return { elapsedMs: performance.now() - startTime, bytes: file.size };
   }
 
-  // RECEIVER SIDE: decrypts each frame as it arrives and reassembles once
-  // the declared file size has been received.
   setupReceiver(aesKey, salt4, { onMeta, onProgress, onComplete } = {}) {
     let meta = null;
     let receivedBytes = 0;
-    const chunks = [];
+    let chunks = [];
     let startTime = null;
 
     this.dataChannel.onmessage = async (event) => {
       const data = new Uint8Array(event.data);
-      const index = new DataView(data.buffer, data.byteOffset, 4).getUint32(0, false);
-      const ciphertext = data.slice(4);
-      const iv = makeIv(salt4, index);
+      const counter = new DataView(data.buffer, data.byteOffset, 4).getUint32(0, false);
+      const frameType = data[4];
+      const ciphertext = data.slice(5);
+      const iv = makeIv(salt4, counter);
 
       let plaintext;
       try {
         plaintext = await decryptChunk(aesKey, ciphertext, iv);
       } catch (e) {
-        this.onLog(`Decryption failed on chunk ${index} -- aborting (wrong key or tampered data)`);
+        this.onLog(`Decryption failed on frame ${counter} -- aborting (wrong key or tampered data)`);
         return;
       }
 
-      if (index === 0) {
+      if (frameType === 0) {
         meta = JSON.parse(new TextDecoder().decode(plaintext));
+        receivedBytes = 0;
+        chunks = [];
         startTime = performance.now();
         onMeta?.(meta);
         return;

@@ -95,7 +95,10 @@ const httpServer = http.createServer((req, res) => {
       return;
     }
     const ext = path.extname(filePath);
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+    res.writeHead(200, {
+      'Content-Type': MIME[ext] || 'application/octet-stream',
+      'Cache-Control': 'no-store',
+    });
     res.end(data);
   });
 });
@@ -139,28 +142,22 @@ function cleanupRoom(roomId) {
 wss.on('connection', (ws) => {
   let joinedRoom = null;
 
-  // Heartbeat, application-level rather than raw WebSocket ping/pong
-  // control frames: some tunnels/proxies (this includes Cloudflare's
-  // quick tunnels in practice) translate WebSocket traffic in a way that
-  // silently drops control frames while ordinary messages keep working
-  // fine. Sending a real {type:'ping'} message travels the exact same
-  // path as every other message here, so it's far more trustworthy.
   ws.isAlive = true;
   ws.missedPings = 0;
 
   ws.on('message', (raw) => {
-    ws.isAlive = true; // any message at all is proof of life
+    ws.isAlive = true;
 
     let msg;
     try {
       msg = JSON.parse(raw.toString());
     } catch {
-      return; // not valid JSON, drop it
+      return;
     }
 
     if (msg.type === 'pong') {
       console.log('Received pong');
-      return; // liveness reply only, nothing else to do
+      return;
     }
 
     if (msg.type === 'join') {
@@ -169,7 +166,6 @@ wss.on('connection', (ws) => {
 
       const room = getOrCreateRoom(roomId);
 
-      // Single-use capability: once two peers are in, the room is full.
       if (room.peers.size >= 2) {
         ws.send(JSON.stringify({ type: 'room-full' }));
         log(roomId, 'rejected a third peer (room-full)');
@@ -189,9 +185,6 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // Anything else is an opaque blob for the other peer: PAKE message,
-    // key-confirmation hash, SDP, or ICE candidate. We relay it verbatim
-    // and only log its declared type, never its contents.
     if (joinedRoom) {
       log(joinedRoom, `relaying message type="${msg.type}" (${raw.length} bytes, contents not inspected)`);
       broadcastToOthers(joinedRoom, ws, msg);
@@ -211,7 +204,6 @@ wss.on('connection', (ws) => {
   });
 });
 
-// Garbage-collect stale rooms that never got a second peer.
 setInterval(() => {
   const now = Date.now();
   for (const [roomId, room] of rooms) {
@@ -223,16 +215,6 @@ setInterval(() => {
   }
 }, 60 * 1000);
 
-// Send an application-level ping every connection periodically. The
-// client (app.js) replies with {type:'pong'} -- a normal message, not a
-// control frame -- which is what makes this reliable through tunnels
-// that mishandle raw WebSocket ping/pong. One missed cycle is tolerated
-// before a connection is treated as dead, to absorb a single dropped
-// packet rather than over-reacting to it.
-//
-// Interval is intentionally short (8s) right now while we're diagnosing
-// exactly how aggressive a given tunnel/proxy's idle timeout is -- once
-// we know that, this can be relaxed back up.
 setInterval(() => {
   for (const ws of wss.clients) {
     if (!ws.isAlive) {
@@ -251,7 +233,7 @@ setInterval(() => {
       ws.send(JSON.stringify({ type: 'ping' }));
       console.log('Sent heartbeat ping');
     } catch {
-      // socket already going away, the close handler will clean it up
+      // socket already going away
     }
   }
 }, 8 * 1000);

@@ -1,5 +1,6 @@
 // public/app.js
 import { Spake2Party, generatePairingCode } from './spake2.js';
+import { Spake2ECParty } from './spake2-ec.js';
 import { WebRTCTransfer } from './webrtc-transfer.js';
 import { importAesKey, randomSalt4, CHUNK_SIZE, makeIv, encryptChunk } from './crypto-utils.js';
 
@@ -16,15 +17,9 @@ function log(line, isErr = false) {
   console.log(line);
 }
 
-// Anything that throws and isn't caught locally still ends up visible here,
-// instead of silently dying in the devtools console (which you often can't
-// even reach on a phone mid-test).
 window.addEventListener('error', (e) => log(`Uncaught error: ${e.message}`, true));
 window.addEventListener('unhandledrejection', (e) => log(`Unhandled error: ${e.reason?.message || e.reason}`, true));
 
-// The single most common silent-failure cause we've hit: the page loaded
-// over plain HTTP on something other than localhost, so crypto.subtle
-// doesn't exist and every pairing attempt fails the moment it's touched.
 if (!window.isSecureContext || !window.crypto?.subtle) {
   log(`Not a secure context (${location.protocol}//${location.host}) -- crypto.subtle is unavailable here. Use HTTPS or localhost.`, true);
 }
@@ -79,12 +74,19 @@ let aesKey = null;
 let salt4 = null;
 let pendingSignals = [];
 let pairingComplete = false;
+let pairingVariant = 'ff'; // 'ff' (finite-field) or 'ec' (elliptic curve P-256)
 
 function setWaveState(state) {
+  const captions = {
+    pairing: 'Pairing in progress (SPAKE2 exchange)...',
+    synced: 'Paired -- zero-knowledge proof verified',
+  };
   document.querySelectorAll('#createWave, #joinWave').forEach((el) => {
     el.classList.remove('is-pairing', 'is-synced');
     if (state === 'pairing') el.classList.add('is-pairing');
     if (state === 'synced') el.classList.add('is-synced');
+    const caption = el.querySelector('.wave-caption');
+    if (caption && captions[state]) caption.textContent = captions[state];
   });
 }
 
@@ -147,7 +149,7 @@ async function handleSignalingMessage(msg) {
         break;
 
       case 'pake': {
-        log('Received peer PAKE message, deriving shared key...');
+        log(`Received peer PAKE message (${msg.value.length / 2} bytes): ${msg.value.slice(0, 32)}${msg.value.length > 32 ? '...' : ''}`);
         const t0 = performance.now();
         const { confirmTagHex } = await spake.finish(msg.value);
         const deriveMs = performance.now() - t0;
@@ -186,12 +188,14 @@ async function handleSignalingMessage(msg) {
 }
 
 async function beginPairing() {
-  spake = new Spake2Party(role);
+  spake = pairingVariant === 'ec' ? new Spake2ECParty(role) : new Spake2Party(role);
+  log(`Using SPAKE2 variant: ${pairingVariant === 'ec' ? 'elliptic curve (P-256)' : 'finite-field (2048-bit)'}`);
   const password = role === 'A' ? createdPassword : enteredPassword;
   const t0 = performance.now();
   const myMessage = await spake.start(password);
   const genMs = performance.now() - t0;
   log(`SPAKE2 proof generation (start): ${genMs.toFixed(2)}ms`);
+  log(`My blinded value (${myMessage.length / 2} bytes): ${myMessage.slice(0, 32)}${myMessage.length > 32 ? '...' : ''}`);
   wsSend({ type: 'pake', value: myMessage });
 }
 
@@ -215,6 +219,8 @@ async function startWebRtc() {
       onMeta: (meta) => {
         log(`Incoming file: ${meta.name} (${formatBytes(meta.size)})`);
         $('receiveStatus').textContent = `Receiving ${meta.name}...`;
+        $('receiveProgressFill').style.width = '0%';
+        $('downloadLink').classList.add('hidden');
       },
       onProgress: ({ received, total }) => {
         $('receiveProgressFill').style.width = `${Math.min(100, (received / total) * 100)}%`;
@@ -247,11 +253,24 @@ $('btnCreate').addEventListener('click', () => {
 
   const roomId = String(crypto.getRandomValues(new Uint32Array(1))[0] % 100000).padStart(5, '0');
   createdPassword = generatePairingCode();
-  const fullCode = `${roomId}#${createdPassword}`;
+  pairingVariant = $('spakeVariant').value;
+  const fullCode = `${roomId}#${pairingVariant}#${createdPassword}`;
   $('codeDisplay').textContent = fullCode;
   log(`Generated room ${roomId} (not secret, just routing) and a separate pairing code (secret, never sent to the server).`);
 
   connectSignaling(roomId);
+
+  try {
+    if (typeof QRCode === 'undefined') {
+      log('QR library did not load -- use the text code above instead.', true);
+    } else {
+      QRCode.toCanvas($('qrCanvas'), fullCode, { width: 220, margin: 1 }, (err) => {
+        if (err) log(`QR code generation failed: ${err.message} (text code above still works)`, true);
+      });
+    }
+  } catch (err) {
+    log(`QR code generation failed: ${err.message} (text code above still works)`, true);
+  }
 });
 
 $('btnSend').addEventListener('click', async () => {
@@ -261,26 +280,27 @@ $('btnSend').addEventListener('click', async () => {
     return;
   }
   $('btnSend').disabled = true;
+  $('sendProgressFill').style.width = '0%';
   log(`Sending ${file.name} (${formatBytes(file.size)})...`);
 
-  const { elapsedMs, bytes } = await transfer.sendFile(file, aesKey, salt4, {
-    onProgress: ({ sent, total }) => {
-      $('sendProgressFill').style.width = `${Math.min(100, (sent / total) * 100)}%`;
-      $('sendStats').textContent = `${formatBytes(sent)} / ${formatBytes(total)}`;
-    },
-  });
+  try {
+    const { elapsedMs, bytes } = await transfer.sendFile(file, aesKey, salt4, {
+      onProgress: ({ sent, total }) => {
+        $('sendProgressFill').style.width = `${Math.min(100, (sent / total) * 100)}%`;
+        $('sendStats').textContent = `${formatBytes(sent)} / ${formatBytes(total)}`;
+      },
+    });
 
-  $('sendStats').textContent = `Done: ${formatBytes(bytes)} in ${(elapsedMs / 1000).toFixed(2)}s -- ${formatThroughput(bytes, elapsedMs)}`;
-  log(`Transfer complete: ${formatBytes(bytes)} in ${(elapsedMs / 1000).toFixed(2)}s (${formatThroughput(bytes, elapsedMs)})`);
+    $('sendStats').textContent = `Done: ${formatBytes(bytes)} in ${(elapsedMs / 1000).toFixed(2)}s -- ${formatThroughput(bytes, elapsedMs)}`;
+    log(`Transfer complete: ${formatBytes(bytes)} in ${(elapsedMs / 1000).toFixed(2)}s (${formatThroughput(bytes, elapsedMs)})`);
+  } catch (err) {
+    log(`Send failed: ${err.message}`, true);
+  } finally {
+    $('btnSend').disabled = false;
+  }
 });
 
 // ---------- Centralized baseline benchmark ----------
-// Encrypts the file with the exact same AES-256-GCM scheme as the P2P
-// path (so encryption overhead isn't what's being measured), then
-// uploads it to this server and immediately downloads it back. That
-// upload+download round trip is the centralized-relay equivalent of one
-// sender-to-receiver transfer -- the number to set against the P2P
-// throughput you already have.
 async function runCentralizedBaseline(file) {
   const keyBytes = crypto.getRandomValues(new Uint8Array(32));
   const baselineKey = await importAesKey(keyBytes);
@@ -342,15 +362,78 @@ $('btnJoin').addEventListener('click', () => {
 });
 
 $('btnJoinSubmit').addEventListener('click', () => {
-  const full = $('codeInput').value.trim();
-  const sep = full.indexOf('#');
-  if (sep < 0) {
-    log('Code should look like 58213#123-456-789 (room # password).', true);
+  const full = $('codeInput').value.trim().replace(/\s+/g, '');
+  const parts = full.split('#');
+  const variant = parts[1]?.toLowerCase();
+  if (parts.length !== 3 || !['ff', 'ec'].includes(variant)) {
+    log('Code should look like 58213#ff#123-456-789 (room # variant # password).', true);
     return;
   }
-  const roomId = full.slice(0, sep);
-  enteredPassword = full.slice(sep + 1);
+  const [roomId, , password] = parts;
+  pairingVariant = variant;
+  enteredPassword = password;
   $('btnJoinSubmit').disabled = true;
   $('codeInput').disabled = true;
   connectSignaling(roomId);
 });
+
+// ---------- QR code scanning (alternative to typing the code) ----------
+let qrStream = null;
+let qrAnimationFrame = null;
+
+function stopQrScan() {
+  if (qrAnimationFrame) cancelAnimationFrame(qrAnimationFrame);
+  qrAnimationFrame = null;
+  if (qrStream) {
+    qrStream.getTracks().forEach((t) => t.stop());
+    qrStream = null;
+  }
+  $('qrVideo').classList.add('hidden');
+  $('qrScanStatus').classList.add('hidden');
+}
+
+$('btnScanQr').addEventListener('click', async () => {
+  const video = $('qrVideo');
+  try {
+    qrStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } },
+    });
+  } catch (err) {
+    log(`Camera access failed: ${err.message}`, true);
+    return;
+  }
+
+  video.srcObject = qrStream;
+  video.classList.remove('hidden');
+  $('qrScanStatus').classList.remove('hidden');
+  await video.play();
+
+  const canvas = $('qrScanCanvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+  function tick() {
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      if (typeof jsQR === 'undefined') {
+        log('QR scanning library did not load -- type the code in manually instead.', true);
+        stopQrScan();
+        return;
+      }
+      const code = jsQR(imageData.data, imageData.width, imageData.height);
+      if (code?.data) {
+        stopQrScan();
+        $('codeInput').value = code.data;
+        log(`QR code scanned: ${code.data}`);
+        $('btnJoinSubmit').click();
+        return;
+      }
+    }
+    qrAnimationFrame = requestAnimationFrame(tick);
+  }
+  qrAnimationFrame = requestAnimationFrame(tick);
+});
+
+$('btnCancelScan').addEventListener('click', stopQrScan);
