@@ -96,7 +96,7 @@ touch STUN or TURN. To actually test this:
   `webrtc-transfer.js`'s `RTCPeerConnection` config -- that's a quick way
   to *prove* TURN works without needing two genuinely hostile networks.
 
-## Benchmarking (what the assignment asks for, not yet automated here)
+## Benchmarking 
 
 This build gives you the live numbers in the UI and log panel (bytes
 transferred, elapsed time, MB/s) for any file you drag in -- that covers
@@ -112,12 +112,8 @@ Still to add for the comparison the brief asks for:
   `performance.now()`), and report on whatever machine you're using as
   "mid-range" -- name the CPU in your write-up so it's reproducible.
 
-## Honest limitations (worth stating yourself before a reviewer finds them)
+## Limitations 
 
-- One-directional in this build: the room creator always sends, the
-  joiner always receives. Bidirectional is a natural extension (just run
-  two `WebRTCTransfer` flows, or interleave `sendFile`/`setupReceiver` on
-  both sides).
 - The SPAKE2 implementation is hand-written for transparency, not
   independently audited, and isn't constant-time. That's an appropriate
   level of rigor for demonstrating you understand and can implement the
