@@ -3,140 +3,252 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>p2p-zk-fileshare</title>
+<title>SecureShare — direct, encrypted file transfer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css" />
-<!-- QR generation (sender) and QR scanning (receiver) -- both run entirely
-     client-side, neither library ever talks to a server. -->
 <script src="qrcode.min.js"></script>
 <script src="jsqr.min.js"></script>
 </head>
 <body>
 
-  <div class="brandbar">
-    <div class="wordmark">p2p<span>&middot;</span>zk<span>&middot;</span>fileshare</div>
-    <div class="tag">SPAKE2 PAIRING &middot; AES-256-GCM &middot; NO ACCOUNTS</div>
+  <!-- ============ Top nav ============ -->
+  <header class="topnav">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">SecureShare</span>
+    </div>
+    <nav class="nav-links" id="navLinks">
+      <button class="nav-link active" data-view="home">Home</button>
+      <button class="nav-link" data-view="transfer">Transfer</button>
+      <button class="nav-link" data-view="history">History</button>
+      <button class="nav-link nav-link--testing" data-view="testing">
+        Testing <span class="wip-dot" title="In progress — testing only"></span>
+      </button>
+    </nav>
+  </header>
+
+  <!-- ============ VIEW: Home ============ -->
+  <div class="view" id="view-home">
+    <section class="hero" id="hero">
+      <div class="hero-copy">
+        <div class="trust-line">NO ACCOUNTS &middot; NO STORED KEYS &middot; ZERO-KNOWLEDGE AUTHENTICATED</div>
+        <h1>Send files straight to another browser.<br /><span class="accent">Nothing touches a server.</span></h1>
+        <p class="lede">SecureShare pairs two devices with a short human-readable code, verifies the pairing with SPAKE2, then moves your file directly between browsers over an encrypted WebRTC channel.</p>
+        <label class="field-inline">
+          SPAKE2 variant
+          <select id="spakeVariant">
+            <option value="ff" selected>Finite-field (2048-bit)</option>
+            <option value="ec">Elliptic curve (P-256)</option>
+          </select>
+        </label>
+        <div class="cta-row">
+          <button id="btnStart" class="btn btn-primary btn-lg">Get started</button>
+        </div>
+      </div>
+      <div class="hero-visual">
+        <div class="wave-window-wrap" id="heroWave">
+          <div class="link-visual">
+            <span class="link-node link-node--you">You</span>
+            <span class="link-line"><span class="link-pulse"></span></span>
+            <span class="link-node link-node--peer">Peer</span>
+          </div>
+          <div class="wave-caption">Direct, end-to-end encrypted connection</div>
+        </div>
+        <ul class="feature-list">
+          <li>Alphanumeric code or QR pairing</li>
+          <li>AES-256-GCM, keys never leave your device</li>
+          <li>Peer-to-peer — no file ever sits on a server</li>
+        </ul>
+      </div>
+    </section>
   </div>
 
-  <section class="hero" id="hero">
-    <div>
-      <h1>Prove you know it.<br /><span class="accent-rx">Never say</span> <span class="accent-tx">what it is.</span></h1>
-      <p class="lede">Files move straight between two browsers, encrypted end-to-end. The pairing code is the only secret in this system, and it never reaches this server.</p>
-      <div class="cta-row">
-        <button id="btnCreate" class="cta cta-tx">&#9650; Send a file</button>
-        <button id="btnJoin" class="cta cta-rx">&#9660; Receive a file</button>
-      </div>
-      <div class="trust-line">NO ACCOUNTS &middot; NO STORED KEYS &middot; VERIFIED LIVE IN THE LOG BELOW</div>
-      <label class="hint" style="display:block; margin-top:0.9rem;">
-        SPAKE2 variant (sender only -- receiver auto-detects from the code):
-        <select id="spakeVariant" style="width:auto; display:inline-block; margin-left:0.5rem; background:var(--panel-2); color:var(--ink); border:1px solid var(--border); border-radius:6px; padding:0.3rem 0.5rem;">
-          <option value="ff" selected>Finite-field (2048-bit)</option>
-          <option value="ec">Elliptic curve (P-256)</option>
-        </select>
-      </label>
-    </div>
+  <!-- ============ VIEW: Transfer ============ -->
+  <div class="view hidden" id="view-transfer">
+    <main>
+      <!-- STEP 2: Connection mode picker -->
+      <section id="modeScreen" class="panel hidden">
+        <div class="eyebrow">How are you connecting?</div>
+        <div class="mode-grid">
+          <button id="btnModeLocal" class="mode-card">
+            <div class="mode-icon">📶</div>
+            <div class="mode-label">Same network</div>
+            <div class="mode-desc">Both devices on the same WiFi</div>
+          </button>
+          <button id="btnModeDistance" class="mode-card">
+            <div class="mode-icon">🌐</div>
+            <div class="mode-label">Different networks</div>
+            <div class="mode-desc">Different WiFi, mobile data, etc.</div>
+          </button>
+        </div>
+      </section>
 
-    <div class="wave-window-wrap" id="heroWave">
-      <div class="wave-window"><div class="wave-strip wave-strip--tx">
-        <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
-        <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
-      </div></div>
-      <div class="wave-window"><div class="wave-strip wave-strip--rx">
-        <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
-        <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
-      </div></div>
-      <div class="wave-caption">TX / RX &mdash; two signals, never compared in the open</div>
-    </div>
-  </section>
+      <!-- STEP 3: Role picker -->
+      <section id="roleScreen" class="panel hidden">
+        <div class="eyebrow">What do you want to do?</div>
+        <div class="cta-row">
+          <button id="btnBecomeSender" class="btn btn-primary">Send a file</button>
+          <button id="btnBecomeReceiver" class="btn btn-secondary">Receive a file</button>
+        </div>
+      </section>
 
-  <main>
-    <section id="createPanel" class="panel panel--tx hidden">
-      <div class="eyebrow">Sender</div>
-      <div class="code-display" id="codeDisplay">generating&hellip;</div>
-      <canvas id="qrCanvas" style="display:block; margin:1rem auto 0; border-radius:8px;"></canvas>
-      <p class="hint">Share this with the recipient however you like &mdash; text, say it out loud, or let them scan the QR code above. None of it touches this server.</p>
+      <!-- Sender waiting panel (before receiver joins) -->
+      <section id="createPanel" class="panel hidden">
+        <div class="eyebrow">Sender</div>
+        <div id="codeSection" class="hidden">
+          <div class="code-display" id="codeDisplay">generating&hellip;</div>
+          <p class="hint">Share this code with the recipient. It never touches this server.</p>
+        </div>
+        <div id="qrSection" class="hidden qr-section">
+          <canvas id="qrCanvas"></canvas>
+          <p class="hint">Or let them scan this QR code.</p>
+        </div>
+        <div id="localHint" class="hint hidden">
+          Show this code to the other device on your WiFi network — no internet needed once you're paired.
+        </div>
+        <div class="wave-window-wrap" id="waitingWave">
+          <div class="link-visual">
+            <span class="link-node link-node--you">You</span>
+            <span class="link-line"><span class="link-pulse"></span></span>
+            <span class="link-node link-node--peer">Peer</span>
+          </div>
+          <div class="wave-caption">Waiting for the other device...</div>
+        </div>
+        <div id="waitingForPeer" class="status">Waiting for recipient to connect&hellip;</div>
+      </section>
 
-      <div class="wave-window-wrap" id="createWave" style="margin-top:1rem;">
-        <div class="wave-window"><div class="wave-strip wave-strip--tx">
-          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
-          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
-        </div></div>
-        <div class="wave-window"><div class="wave-strip wave-strip--rx">
-          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
-          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
-        </div></div>
-        <div class="wave-caption">Idle until the recipient joins</div>
-      </div>
-      <div id="waitingForPeer" class="status">Waiting for the recipient to join&hellip;</div>
+      <!-- Receiver waiting panel (before sender joins) -->
+      <section id="joinPanel" class="panel hidden">
+        <div class="eyebrow">Receiver</div>
+        <p id="joinHint" class="hint">Type the code or scan the QR shown on the sender's screen.</p>
+        <div id="codeInputSection">
+          <input type="text" id="codeInput" placeholder="e.g. 58213#ff#123-456-789"
+            autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+          <button id="btnJoinSubmit" class="btn btn-primary">Connect</button>
+        </div>
+        <div id="scanSection" class="scan-section">
+          <button id="btnScanQr" type="button" class="btn btn-ghost">Scan QR code instead</button>
+          <video id="qrVideo" class="hidden qr-video" playsinline muted></video>
+          <canvas id="qrScanCanvas" style="display:none;"></canvas>
+          <div id="qrScanStatus" class="hint hidden">Point the camera at the sender's QR code&hellip;
+            <button id="btnCancelScan" type="button" class="btn btn-ghost btn-sm">Cancel</button>
+          </div>
+        </div>
+        <div class="wave-window-wrap" id="joinWave">
+          <div class="link-visual">
+            <span class="link-node link-node--you">You</span>
+            <span class="link-line"><span class="link-pulse"></span></span>
+            <span class="link-node link-node--peer">Peer</span>
+          </div>
+          <div class="wave-caption">Enter the code to begin pairing</div>
+        </div>
+      </section>
 
-      <div id="sendControls" class="hidden" style="margin-top:1rem;">
-        <input type="file" id="filePicker" />
-        <button id="btnSend" disabled>Send (encrypted)</button>
-        <div class="progress-bar"><div id="sendProgressFill" class="progress-fill"></div></div>
-        <div id="sendStats" class="stats"></div>
-      </div>
-    </section>
+      <!-- Connected panel (shown to both sides after pairing) -->
+      <section id="connectedPanel" class="panel hidden">
+        <div class="connected-header">
+          <span class="status-dot"></span>
+          <span class="connected-label">Connected — end-to-end encrypted</span>
+        </div>
 
-    <section id="joinPanel" class="panel panel--rx hidden">
-      <div class="eyebrow">Receiver</div>
-      <input type="text" id="codeInput" placeholder="e.g. 58213#ff#123-456-789" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
-      <button id="btnJoinSubmit">Connect</button>
-      <button id="btnScanQr" type="button">Scan QR code instead</button>
+        <div class="wave-window-wrap" id="createWave">
+          <div class="link-visual">
+            <span class="link-node link-node--you">You</span>
+            <span class="link-line"><span class="link-pulse"></span></span>
+            <span class="link-node link-node--peer">Peer</span>
+          </div>
+          <div class="wave-caption" id="connectedWaveCaption">Paired — encrypted channel ready</div>
+        </div>
 
-      <video id="qrVideo" class="hidden" playsinline muted style="width:100%; max-width:320px; border-radius:8px; margin-top:0.8rem; display:block;"></video>
-      <canvas id="qrScanCanvas" style="display:none;"></canvas>
-      <div id="qrScanStatus" class="hint hidden">Point the camera at the sender's QR code&hellip;
-        <button id="btnCancelScan" type="button" style="margin-left:0.5rem;">Cancel</button>
-      </div>
+        <!-- Tab bar -->
+        <div class="tab-bar">
+          <button class="tab-btn active" id="tabSend" onclick="switchTab('send')">
+            Send
+          </button>
+          <button class="tab-btn" id="tabReceived" onclick="switchTab('received')">
+            Received <span id="receivedBadge" class="badge hidden">0</span>
+          </button>
+        </div>
 
-      <div class="wave-window-wrap" id="joinWave" style="margin-top:1rem;">
-        <div class="wave-window"><div class="wave-strip wave-strip--tx">
-          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
-          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
-        </div></div>
-        <div class="wave-window"><div class="wave-strip wave-strip--rx">
-          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
-          <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0,20 Q25,2 50,20 Q75,38 100,20"/></svg>
-        </div></div>
-        <div class="wave-caption">Enter the code to begin pairing</div>
-      </div>
+        <!-- Send tab -->
+        <div id="sendTab" class="tab-content">
+          <label class="dropzone" id="dropzone" for="filePicker">
+            <input type="file" id="filePicker" class="visually-hidden" multiple />
+            <div class="dropzone-icon">⇪</div>
+            <div class="dropzone-text">
+              <strong>Drag &amp; drop one or more files</strong>
+              <span>or click to browse — either side can send, files send one at a time</span>
+            </div>
+            <div class="dropzone-filename" id="dropzoneFilename"></div>
+          </label>
+          <div class="send-controls">
+            <button id="btnSend" class="btn btn-primary" disabled>Send file</button>
+          </div>
+          <div id="sendQueueList" class="queue-list"></div>
+          <div class="progress-bar"><div id="sendProgressFill" class="progress-fill"></div></div>
+          <div id="sendStats" class="stats"></div>
+        </div>
 
-      <div id="receiveStatus" class="status hidden"></div>
-      <div class="progress-bar"><div id="receiveProgressFill" class="progress-fill"></div></div>
-      <div id="receiveStats" class="stats"></div>
-      <a id="downloadLink" class="hidden"></a>
-    </section>
+        <!-- Received tab -->
+        <div id="receivedTab" class="tab-content hidden">
+          <div class="progress-bar"><div id="receiveProgressFill" class="progress-fill"></div></div>
+          <div id="downloadHistory" class="visually-hidden-block"></div>
+          <p class="hint">Received files also appear in <button class="link-btn" data-goto-view="history">Transfer History</button>.</p>
+        </div>
+      </section>
 
-    <details id="advanced" class="panel">
-      <summary>Advanced: TURN server (needed across real NATs, not for same-machine testing)</summary>
-      <label>TURN URL <input type="text" id="turnUrl" placeholder="turn:your-coturn-host:3478" /></label>
-      <label>Username <input type="text" id="turnUser" /></label>
-      <label>Credential <input type="password" id="turnPass" /></label>
-      <label style="display:flex; align-items:center; gap:0.5rem; margin-top:0.8rem;">
-        <input type="checkbox" id="forceRelay" style="width:auto; margin:0;" />
-        Force relay-only (discards every non-TURN candidate -- proves TURN actually works instead of just being configured)
-      </label>
-    </details>
+      <section class="panel log-panel">
+        <div class="log-header">
+          <div class="eyebrow">Activity log</div>
+          <div class="live-dot">LIVE</div>
+        </div>
+        <div id="log" class="log"></div>
+      </section>
+    </main>
+  </div>
 
-    <section class="panel">
-      <div class="eyebrow">Benchmark: centralized baseline</div>
-      <p class="hint">Encrypts the same way as the P2P path, then uploads + downloads through this server. Run this at the same file size as a P2P transfer to get a real comparison.</p>
-      <input type="file" id="baselineFilePicker" />
-      <button id="btnBaseline">Run centralized baseline</button>
-      <div id="baselineStats" class="stats"></div>
-    </section>
+  <!-- ============ VIEW: History ============ -->
+  <div class="view hidden" id="view-history">
+    <main>
+      <section class="panel">
+        <div class="eyebrow">Transfer history</div>
+        <p class="hint" style="margin-top:0;">Sent and received files from this session, most recent first.</p>
+        <div id="unifiedHistoryList" class="history-list">
+          <div class="empty-state">No transfers yet this session — head to the Transfer tab to send or receive a file.</div>
+        </div>
+      </section>
+    </main>
+  </div>
 
-    <section class="panel log-panel">
-      <div class="log-header">
-        <div class="eyebrow">Protocol log</div>
-        <div class="live-dot">LIVE</div>
-      </div>
-      <div id="log" class="log"></div>
-    </section>
-  </main>
+  <!-- ============ VIEW: Testing / Diagnostics ============ -->
+  <div class="view hidden" id="view-testing">
+    <main>
+      <section class="panel">
+        <div class="testing-banner">Testing tools — connectivity and performance checks still being validated.</div>
 
+        <div class="eyebrow" style="margin-top:1.25rem;">TURN / relay configuration</div>
+        <label>TURN URL <input type="text" id="turnUrl" placeholder="turn:your-coturn-host:3478" /></label>
+        <label>Username <input type="text" id="turnUser" /></label>
+        <label>Credential <input type="password" id="turnPass" /></label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="forceRelay" />
+          Force relay-only (proves TURN works)
+        </label>
+
+        <div style="margin-top:1.5rem;">
+          <div class="eyebrow">Benchmark: centralized baseline</div>
+          <p class="hint">Encrypts and uploads the same way as P2P, then downloads back. Compare against real transfer numbers.</p>
+          <input type="file" id="baselineFilePicker" />
+          <button id="btnBaseline" class="btn btn-secondary">Run centralized baseline</button>
+          <div id="baselineStats" class="stats"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="ui.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

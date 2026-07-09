@@ -1,16 +1,17 @@
 // public/webrtc-transfer.js
 import { CHUNK_SIZE, makeIv, encryptChunk, decryptChunk } from './crypto-utils.js';
 
-function parseCandidateType(candidateStr) {
-  const m = /typ (\w+)/.exec(candidateStr || '');
+function parseCandidateType(s) {
+  const m = /typ (\w+)/.exec(s || '');
   return m ? m[1] : 'unknown';
 }
 
 export class WebRTCTransfer {
-  constructor(role, signalingSend, onLog = () => {}) {
+  constructor(role, signalingSend, onLog = () => {}, onDebug = () => {}) {
     this.role = role;
     this.signalingSend = signalingSend;
     this.onLog = onLog;
+    this.onDebug = onDebug;
     this.dataChannel = null;
     this.pendingCandidates = [];
     this.pc = null;
@@ -19,32 +20,28 @@ export class WebRTCTransfer {
   }
 
   async connect(iceServers, { relayOnly = false } = {}) {
-    this.pc = new RTCPeerConnection({
-      iceServers,
-      iceTransportPolicy: relayOnly ? 'relay' : 'all',
-    });
-    if (relayOnly) this.onLog('Forcing relay-only mode -- every candidate that isn\'t a TURN relay will be discarded, even on a friendly network.');
+    this.pc = new RTCPeerConnection({ iceServers, iceTransportPolicy: relayOnly ? 'relay' : 'all' });
+    if (relayOnly) this.onLog('Relay-only mode active — using TURN server.');
 
     this.pc.onicecandidate = (e) => {
       if (e.candidate) {
-        this.onLog(`ICE candidate gathered: ${parseCandidateType(e.candidate.candidate)}`);
+        this.onDebug(`ICE candidate: ${parseCandidateType(e.candidate.candidate)}`);
         this.signalingSend({ type: 'ice-candidate', candidate: e.candidate });
       }
     };
 
     this.pc.onconnectionstatechange = () => {
-      this.onLog(`Peer connection state: ${this.pc.connectionState}`);
-      if (this.pc.connectionState === 'connected') {
-        this.connectionDead = false;
-        this._logSelectedCandidatePair();
-      }
-      if (this.pc.connectionState === 'failed' || this.pc.connectionState === 'closed') {
+      const s = this.pc.connectionState;
+      this.onDebug(`Connection state: ${s}`);
+      if (s === 'connected') { this.connectionDead = false; this._logSelectedPair(); }
+      if (s === 'failed' || s === 'closed') {
         this.connectionDead = true;
+        this.onLog('Connection lost. Refresh both sides to reconnect.', true);
       }
     };
 
     this.pc.oniceconnectionstatechange = () => {
-      this.onLog(`ICE connection state: ${this.pc.iceConnectionState}`);
+      this.onDebug(`ICE state: ${this.pc.iceConnectionState}`);
     };
 
     const channelReady = new Promise((resolve) => {
@@ -59,7 +56,7 @@ export class WebRTCTransfer {
     if (this.role === 'A') {
       const offer = await this.pc.createOffer();
       await this.pc.setLocalDescription(offer);
-      this.onLog('Sending SDP offer');
+      this.onDebug('Sending SDP offer');
       this.signalingSend({ type: 'sdp-offer', sdp: this.pc.localDescription });
     }
 
@@ -70,115 +67,80 @@ export class WebRTCTransfer {
     this.dataChannel = dc;
     dc.binaryType = 'arraybuffer';
     dc.bufferedAmountLowThreshold = 256 * 1024;
-    dc.onopen = () => {
-      this.onLog('DataChannel open -- direct P2P link established');
-      resolve(dc);
-    };
-    dc.onerror = (e) => this.onLog(`DataChannel error: ${e.message || e}`);
+    dc.onopen = () => { this.onLog('Ready to transfer files.'); resolve(dc); };
+    dc.onerror = (e) => this.onLog(`Channel error: ${e.message || e}`, true);
   }
 
   async handleSignal(msg) {
     if (msg.type === 'sdp-offer' && this.role === 'B') {
-      this.onLog('Received SDP offer');
+      this.onDebug('Received SDP offer');
       await this.pc.setRemoteDescription(msg.sdp);
-      await this._flushPendingCandidates();
+      await this._flushCandidates();
       const answer = await this.pc.createAnswer();
       await this.pc.setLocalDescription(answer);
-      this.onLog('Sending SDP answer');
+      this.onDebug('Sending SDP answer');
       this.signalingSend({ type: 'sdp-answer', sdp: this.pc.localDescription });
       return;
     }
     if (msg.type === 'sdp-answer' && this.role === 'A') {
-      this.onLog('Received SDP answer');
+      this.onDebug('Received SDP answer');
       await this.pc.setRemoteDescription(msg.sdp);
-      await this._flushPendingCandidates();
+      await this._flushCandidates();
       return;
     }
     if (msg.type === 'ice-candidate') {
       if (this.pc.remoteDescription) {
-        await this.pc.addIceCandidate(msg.candidate).catch((e) => this.onLog(`addIceCandidate failed: ${e.message}`));
+        await this.pc.addIceCandidate(msg.candidate).catch(e => this.onDebug(`addIceCandidate: ${e.message}`));
       } else {
         this.pendingCandidates.push(msg.candidate);
       }
     }
   }
 
-  async _flushPendingCandidates() {
+  async _flushCandidates() {
     while (this.pendingCandidates.length) {
       const c = this.pendingCandidates.shift();
-      await this.pc.addIceCandidate(c).catch((e) => this.onLog(`addIceCandidate failed: ${e.message}`));
+      await this.pc.addIceCandidate(c).catch(e => this.onDebug(`addIceCandidate: ${e.message}`));
     }
   }
 
-  async _logSelectedCandidatePair() {
+  async _logSelectedPair() {
     try {
       const stats = await this.pc.getStats();
       let pair = null;
-      for (const report of stats.values()) {
-        if (report.type === 'candidate-pair' && report.state === 'succeeded' && (report.nominated || report.selected)) {
-          pair = report;
-          break;
-        }
+      for (const r of stats.values()) {
+        if (r.type === 'candidate-pair' && r.state === 'succeeded' && (r.nominated || r.selected)) { pair = r; break; }
       }
-      if (!pair) {
-        for (const report of stats.values()) {
-          if (report.type === 'candidate-pair' && report.state === 'succeeded') {
-            pair = report;
-            break;
-          }
-        }
+      if (!pair) for (const r of stats.values()) {
+        if (r.type === 'candidate-pair' && r.state === 'succeeded') { pair = r; break; }
       }
-      if (!pair) {
-        this.onLog('Could not find a succeeded candidate pair in getStats() yet.');
-        return;
-      }
+      if (!pair) return;
       const local = stats.get(pair.localCandidateId);
       const remote = stats.get(pair.remoteCandidateId);
-      const localType = local?.candidateType || 'unknown';
-      const remoteType = remote?.candidateType || 'unknown';
-      this.onLog(`CONNECTED VIA: local=${localType} / remote=${remoteType} (this is the actual winning path, confirmed via getStats)`);
-    } catch (e) {
-      this.onLog(`getStats() lookup failed: ${e.message}`);
-    }
+      const lt = local?.candidateType || '?';
+      const rt = remote?.candidateType || '?';
+      const label = lt === 'relay' ? 'TURN relay' : lt === 'srflx' ? 'STUN (direct across NAT)' : 'direct (same network)';
+      this.onLog(`Connected via ${label} (local=${lt}, remote=${rt})`);
+    } catch (e) { this.onDebug(`getStats failed: ${e.message}`); }
   }
 
-  // Previously this could wait forever on 'bufferedamountlow' if the
-  // underlying connection stalled (the exact symptom that forced a page
-  // refresh to recover from). Now it bails out clearly instead: either
-  // the connection is confirmed dead, or 30s passed with no progress.
   async _waitForBufferSpace() {
     const dc = this.dataChannel;
     if (dc.bufferedAmount <= dc.bufferedAmountLowThreshold) return;
-    if (this.connectionDead) throw new Error('Connection failed while waiting to send -- aborting rather than hanging.');
-
+    if (this.connectionDead) throw new Error('Connection failed — aborting send.');
     await new Promise((resolve, reject) => {
-      const cleanup = () => {
-        dc.removeEventListener('bufferedamountlow', handler);
-        clearInterval(deadCheck);
-        clearTimeout(timeout);
-      };
-      const handler = () => {
-        cleanup();
-        resolve();
-      };
-      const deadCheck = setInterval(() => {
-        if (this.connectionDead) {
-          cleanup();
-          reject(new Error('Connection failed while waiting to send.'));
-        }
-      }, 500);
-      const timeout = setTimeout(() => {
-        cleanup();
-        reject(new Error('Timed out waiting for the connection to drain its send buffer (30s) -- the link is likely down.'));
-      }, 30000);
-      dc.addEventListener('bufferedamountlow', handler);
+      const cleanup = () => { dc.removeEventListener('bufferedamountlow', h); clearInterval(di); clearTimeout(ti); };
+      const h = () => { cleanup(); resolve(); };
+      const di = setInterval(() => { if (this.connectionDead) { cleanup(); reject(new Error('Connection failed.')); } }, 500);
+      const ti = setTimeout(() => { cleanup(); reject(new Error('Timed out waiting to send (30s).')); }, 30000);
+      dc.addEventListener('bufferedamountlow', h);
     });
   }
 
-  async _sendEncryptedFrame(aesKey, salt4, frameType, plaintextBytes) {
+  async _sendFrame(aesKey, salt4, frameType, plaintext) {
     const counter = this.chunkCounter++;
     const iv = makeIv(salt4, counter);
-    const ciphertext = await encryptChunk(aesKey, plaintextBytes, iv);
+    const ciphertext = await encryptChunk(aesKey, plaintext, iv);
     const frame = new Uint8Array(5 + ciphertext.length);
     new DataView(frame.buffer).setUint32(0, counter, false);
     frame[4] = frameType;
@@ -188,69 +150,43 @@ export class WebRTCTransfer {
 
   async sendFile(file, aesKey, salt4, { onProgress } = {}) {
     const meta = { name: file.name, size: file.size, mime: file.type || 'application/octet-stream' };
-    await this._sendEncryptedFrame(aesKey, salt4, 0, new TextEncoder().encode(JSON.stringify(meta)));
-
+    await this._sendFrame(aesKey, salt4, 0, new TextEncoder().encode(JSON.stringify(meta)));
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE) || 1;
-    const startTime = performance.now();
-    let sentBytes = 0;
-
+    const t0 = performance.now();
+    let sent = 0;
     for (let i = 0; i < totalChunks; i++) {
-      const start = i * CHUNK_SIZE;
-      const slice = file.slice(start, start + CHUNK_SIZE);
-      const buf = new Uint8Array(await slice.arrayBuffer());
+      const buf = new Uint8Array(await file.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE).arrayBuffer());
       await this._waitForBufferSpace();
-      await this._sendEncryptedFrame(aesKey, salt4, 1, buf);
-      sentBytes += buf.length;
-      onProgress?.({ sent: sentBytes, total: file.size, chunk: i + 1, totalChunks });
+      await this._sendFrame(aesKey, salt4, 1, buf);
+      sent += buf.length;
+      onProgress?.({ sent, total: file.size });
     }
-
-    return { elapsedMs: performance.now() - startTime, bytes: file.size };
+    return { elapsedMs: performance.now() - t0, bytes: file.size };
   }
 
   setupReceiver(aesKey, salt4, { onMeta, onProgress, onComplete } = {}) {
-    let meta = null;
-    let receivedBytes = 0;
-    let chunks = [];
-    let startTime = null;
-
+    let meta = null, received = 0, chunks = [], t0 = null;
     this.dataChannel.onmessage = async (event) => {
       const data = new Uint8Array(event.data);
       const counter = new DataView(data.buffer, data.byteOffset, 4).getUint32(0, false);
       const frameType = data[4];
       const ciphertext = data.slice(5);
-      const iv = makeIv(salt4, counter);
-
       let plaintext;
-      try {
-        plaintext = await decryptChunk(aesKey, ciphertext, iv);
-      } catch (e) {
-        this.onLog(`Decryption failed on frame ${counter} -- aborting (wrong key or tampered data)`);
-        return;
-      }
-
+      try { plaintext = await decryptChunk(aesKey, ciphertext, makeIv(salt4, counter)); }
+      catch { this.onLog('Decryption failed — file may be corrupted or tampered with.', true); return; }
       if (frameType === 0) {
         meta = JSON.parse(new TextDecoder().decode(plaintext));
-        receivedBytes = 0;
-        chunks = [];
-        startTime = performance.now();
-        onMeta?.(meta);
-        return;
+        received = 0; chunks = []; t0 = performance.now();
+        onMeta?.(meta); return;
       }
-
-      chunks.push(plaintext);
-      receivedBytes += plaintext.length;
-      onProgress?.({ received: receivedBytes, total: meta.size });
-
-      if (receivedBytes >= meta.size) {
-        const elapsedMs = performance.now() - startTime;
-        const blob = new Blob(chunks, { type: meta.mime });
-        onComplete?.({ blob, meta, elapsedMs });
+      chunks.push(plaintext); received += plaintext.length;
+      onProgress?.({ received, total: meta.size });
+      if (received >= meta.size) {
+        const elapsedMs = performance.now() - t0;
+        onComplete?.({ blob: new Blob(chunks, { type: meta.mime }), meta, elapsedMs });
       }
     };
   }
 
-  close() {
-    this.dataChannel?.close();
-    this.pc?.close();
-  }
+  close() { this.dataChannel?.close(); this.pc?.close(); }
 }
